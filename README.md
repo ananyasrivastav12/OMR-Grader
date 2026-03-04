@@ -53,7 +53,3 @@ pip install pyinstaller
 pyinstaller --noconfirm --windowed --name OMR-Grader app.py
 ```
 Output: `dist/OMR-Grader`
-
-## Repository Notes
-Generated outputs are ignored via `.gitignore`:
-- `debug_out/`, `out/`, `__pycache__/`, generated `.xlsx/.csv/.json` outputs
