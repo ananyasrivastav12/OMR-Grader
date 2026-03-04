@@ -26,6 +26,14 @@ class Template:
     NAME_BLANK_THRESHOLD: float = 0.07
     NAME_DELTA_THRESHOLD: float = 0.03
     NAME_DISK_RADIUS_FRAC: float = 0.35
+    NAME_INK_THRESHOLD: int = 150
+    NAME_MIN_BLOB_AREA: int = 80
+    NAME_MAX_BLOB_AREA: int = 2000
+    NAME_GROUP_X_GAP: float = 14.0  # pixels at REF_W scale
+    # Row mapping in NAME_ROI coordinates (at REF_H scale):
+    # row_index ~= (y_rel - NAME_ROW0_OFFSET) / NAME_ROW_STEP
+    NAME_ROW0_OFFSET: float = 135.5
+    NAME_ROW_STEP: float = 25.45
 
     # Answer layout
     BLOCKS: int = 5
@@ -312,6 +320,102 @@ def decode_name_with_offset(scores: np.ndarray, row_offset: int) -> str:
     return "".join(chars).rstrip("_").strip()
 
 
+def detect_name_blobs(img: np.ndarray, roi: Tuple[int, int, int, int]) -> List[Tuple[float, float, int]]:
+    x1, y1, x2, y2 = roi
+    patch = img[y1:y2, x1:x2]
+    ink = (patch < T.NAME_INK_THRESHOLD).astype(np.uint8) * 255
+    ink = cv2.medianBlur(ink, 3)
+
+    n, _, stats, centroids = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    blobs: List[Tuple[float, float, int]] = []
+
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < T.NAME_MIN_BLOB_AREA or area > T.NAME_MAX_BLOB_AREA:
+            continue
+        cx, cy = centroids[i]
+        blobs.append((x1 + float(cx), y1 + float(cy), area))
+
+    blobs.sort(key=lambda t: t[0])
+    return blobs
+
+
+def group_name_blobs(blobs: List[Tuple[float, float, int]], x_gap: float) -> List[List[Tuple[float, float, int]]]:
+    if not blobs:
+        return []
+    groups: List[List[Tuple[float, float, int]]] = [[blobs[0]]]
+    for b in blobs[1:]:
+        if b[0] - groups[-1][-1][0] <= x_gap:
+            groups[-1].append(b)
+        else:
+            groups.append([b])
+    return groups
+
+
+def decode_name_from_blobs(
+    blobs: List[Tuple[float, float, int]], roi: Tuple[int, int, int, int], sx: float, sy: float
+) -> Tuple[str, Dict]:
+    x1, y1, _, _ = roi
+    x_gap = T.NAME_GROUP_X_GAP * (1.0 if sx <= 0 else sx)
+    groups = group_name_blobs(blobs, x_gap=x_gap)
+
+    row0 = T.NAME_ROW0_OFFSET * sy
+    row_step = max(1e-6, T.NAME_ROW_STEP * sy)
+
+    decoded_chars: List[str] = []
+    group_debug: List[Dict] = []
+    blob_rows: List[Dict] = []
+
+    for gi, grp in enumerate(groups):
+        rep = max(grp, key=lambda t: t[2])
+        rx, ry, rarea = rep
+        y_rel = float(ry - y1)
+        row_idx = int(round((y_rel - row0) / row_step))
+        row_idx = max(0, min(25, row_idx))
+        ch = chr(ord("A") + row_idx)
+        decoded_chars.append(ch)
+
+        group_debug.append(
+            {
+                "group": gi,
+                "char": ch,
+                "row_idx": row_idx,
+                "rep_x": float(rx),
+                "rep_y": float(ry),
+                "rep_area": int(rarea),
+                "group_size": len(grp),
+            }
+        )
+
+        for bx, by, ba in grp:
+            blob_rows.append(
+                {
+                    "group": gi,
+                    "x": float(bx),
+                    "y": float(by),
+                    "area": int(ba),
+                    "selected": int(abs(bx - rx) < 1e-6 and abs(by - ry) < 1e-6 and ba == rarea),
+                    "char": ch,
+                    "row_idx": row_idx,
+                    "x_local": float(bx - x1),
+                    "y_local": float(by - y1),
+                }
+            )
+
+    name = "".join(decoded_chars).strip()
+    debug = {
+        "method": "blob_grouping",
+        "blobs_detected": len(blobs),
+        "groups": group_debug,
+        "raw": name,
+        "row0_offset_scaled": row0,
+        "row_step_scaled": row_step,
+        "x_gap_scaled": x_gap,
+        "blob_rows": blob_rows,
+    }
+    return name, debug
+
+
 def score_sheet(student_answers: Dict[int, str], key: Dict[int, str]) -> Tuple[float, Dict]:
     total_q = T.BLOCKS * T.QUESTIONS_PER_BLOCK
     correct = wrong = blank = 0
@@ -410,6 +514,31 @@ def save_name_overlay(name_patch: np.ndarray, name_dbg: Dict, out_path: Path) ->
     cv2.imwrite(str(out_path), vis)
 
 
+def save_name_blob_overlay(
+    name_patch: np.ndarray, name_dbg: Dict, roi: Tuple[int, int, int, int], out_path: Path
+) -> None:
+    vis = cv2.cvtColor(name_patch, cv2.COLOR_GRAY2BGR)
+    x1, y1, _, _ = roi
+
+    for g in name_dbg.get("groups", []):
+        x = int(round(float(g["rep_x"]) - x1))
+        y = int(round(float(g["rep_y"]) - y1))
+        ch = str(g["char"])
+        cv2.circle(vis, (x, y), 10, (0, 180, 0), 2)
+        cv2.putText(
+            vis,
+            ch,
+            (x - 5, y + 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    cv2.imwrite(str(out_path), vis)
+
+
 def save_decoded_answers_table(
     out_img_dir: Path, answers: Dict[int, str], key: Dict[int, str], assignments: List[Dict]
 ) -> None:
@@ -449,6 +578,8 @@ def save_decoded_answers_table(
 def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
     img = read_gray(img_path)
     h, w = img.shape[:2]
+    sx = w / T.REF_W
+    sy = h / T.REF_H
 
     name_roi = scale_roi(T.NAME_ROI, w, h)
     answer_roi = scale_roi(T.ANSWER_ROI, w, h)
@@ -456,8 +587,15 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
     name_patch = crop(img, name_roi)
     answer_patch = crop(img, answer_roi)
 
+    # New primary name decoding: connected components + x-grouping.
+    name_blobs = detect_name_blobs(img, name_roi)
+    decoded_name, name_dbg = decode_name_from_blobs(name_blobs, name_roi, sx=sx, sy=sy)
+
+    # Keep old grid scoring as secondary diagnostic for comparison.
     name_scores = compute_name_scores(name_patch)
-    decoded_name, name_dbg = decode_name_from_scores(name_scores)
+    grid_name, grid_name_dbg = decode_name_from_scores(name_scores)
+    name_dbg["legacy_grid_name"] = grid_name
+    name_dbg["legacy_grid_raw"] = grid_name_dbg.get("raw")
 
     circles = detect_answer_circles(answer_patch)
     answers: Dict[int, str] = {}
@@ -476,15 +614,25 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
     cv2.imwrite(str(out_img_dir / "roi_name.png"), name_patch)
     cv2.imwrite(str(out_img_dir / "roi_answers.png"), answer_patch)
     save_name_heatmap(name_scores, out_img_dir / "heatmap_name.png")
-    save_name_overlay(name_patch, name_dbg, out_img_dir / "overlay_name_grid.png")
+    save_name_overlay(name_patch, grid_name_dbg, out_img_dir / "overlay_name_grid.png")
+    save_name_blob_overlay(name_patch, name_dbg, name_roi, out_img_dir / "overlay_name_blobs_labeled.png")
     save_answer_overlay(answer_patch, circles, out_img_dir / "overlay_answer_circles.png")
     assignments = ans_dbg.get("assignments", []) if isinstance(ans_dbg, dict) else []
     save_answer_overlay_labeled(answer_patch, assignments, key, out_img_dir / "overlay_answer_labeled.png")
     save_decoded_answers_table(out_img_dir, answers, key, assignments)
 
     pd.DataFrame(name_scores).to_csv(out_img_dir / "name_scores.csv", index=False)
-    pd.DataFrame(name_dbg.get("per_col", [])).to_csv(out_img_dir / "name_columns.csv", index=False)
-    name_hyp = [{"row_offset": off, "decoded": decode_name_with_offset(name_scores, off)} for off in range(-8, 9)]
+    pd.DataFrame(grid_name_dbg.get("per_col", [])).to_csv(out_img_dir / "name_columns.csv", index=False)
+    pd.DataFrame(name_dbg.get("blob_rows", [])).to_csv(out_img_dir / "name_blobs.csv", index=False)
+
+    # Row-offset hypotheses for blob decoder, useful while calibrating row mapping.
+    name_hyp: List[Dict] = []
+    for off in range(-6, 7):
+        chars: List[str] = []
+        for g in name_dbg.get("groups", []):
+            row_idx = max(0, min(25, int(g["row_idx"]) + off))
+            chars.append(chr(ord("A") + row_idx))
+        name_hyp.append({"row_offset": off, "decoded": "".join(chars)})
     with (out_img_dir / "name_hypotheses.json").open("w", encoding="utf-8") as f:
         json.dump(name_hyp, f, indent=2)
 
@@ -493,7 +641,7 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
         "shape": {"w": w, "h": h},
         "name_roi": name_roi,
         "answer_roi": answer_roi,
-        "name": {"decoded": decoded_name, "debug": name_dbg},
+        "name": {"decoded": decoded_name, "debug": name_dbg, "legacy_grid": {"decoded": grid_name, "debug": grid_name_dbg}},
         "answers": {
             "decoded_count": len(answers),
             "first_20": {str(q): answers.get(q) for q in range(1, 21)},
