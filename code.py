@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -49,8 +50,8 @@ class Template:
     H_MAX_RADIUS: int = 16
 
     # Scoring
-    SCORE_CORRECT: float = 1.0
-    SCORE_WRONG: float = -0.25
+    SCORE_CORRECT: float = 3.0
+    SCORE_WRONG: float = -1.0
 
 
 T = Template()
@@ -130,10 +131,10 @@ def load_answer_key_xlsx(path: Path) -> Dict[int, str]:
     return key
 
 
-def save_answer_key_debug(key: Dict[int, str], xlsx_path: Path) -> None:
-    ensure_dir(OUT_DIR)
+def save_answer_key_debug(key: Dict[int, str], xlsx_path: Path, out_dir: Path) -> None:
+    ensure_dir(out_dir)
     rows = [{"q": q, "answer": key[q]} for q in sorted(key)]
-    pd.DataFrame(rows).to_csv(OUT_DIR / "answer_key_parsed.csv", index=False)
+    pd.DataFrame(rows).to_csv(out_dir / "answer_key_parsed.csv", index=False)
 
     key_dump = {
         "source_xlsx": xlsx_path.name,
@@ -141,7 +142,7 @@ def save_answer_key_debug(key: Dict[int, str], xlsx_path: Path) -> None:
         "first_20": {str(q): key[q] for q in sorted(key)[:20]},
         "all": {str(q): key[q] for q in sorted(key)},
     }
-    with (OUT_DIR / "answer_key_parsed.json").open("w", encoding="utf-8") as f:
+    with (out_dir / "answer_key_parsed.json").open("w", encoding="utf-8") as f:
         json.dump(key_dump, f, indent=2)
 
 
@@ -575,7 +576,13 @@ def save_decoded_answers_table(
     pd.DataFrame(rows).to_csv(out_img_dir / "decoded_answers.csv", index=False)
 
 
-def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
+def process_one_image(
+    img_path: Path,
+    key: Dict[int, str],
+    *,
+    save_debug: bool = True,
+    debug_root: Optional[Path] = None,
+) -> Dict:
     img = read_gray(img_path)
     h, w = img.shape[:2]
     sx = w / T.REF_W
@@ -608,50 +615,52 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
 
     score, score_dbg = score_sheet(answers, key)
 
-    out_img_dir = DEBUG_DIR / img_path.stem
-    ensure_dir(out_img_dir)
-
-    cv2.imwrite(str(out_img_dir / "roi_name.png"), name_patch)
-    cv2.imwrite(str(out_img_dir / "roi_answers.png"), answer_patch)
-    save_name_heatmap(name_scores, out_img_dir / "heatmap_name.png")
-    save_name_overlay(name_patch, grid_name_dbg, out_img_dir / "overlay_name_grid.png")
-    save_name_blob_overlay(name_patch, name_dbg, name_roi, out_img_dir / "overlay_name_blobs_labeled.png")
-    save_answer_overlay(answer_patch, circles, out_img_dir / "overlay_answer_circles.png")
     assignments = ans_dbg.get("assignments", []) if isinstance(ans_dbg, dict) else []
-    save_answer_overlay_labeled(answer_patch, assignments, key, out_img_dir / "overlay_answer_labeled.png")
-    save_decoded_answers_table(out_img_dir, answers, key, assignments)
+    if save_debug:
+        root = debug_root if debug_root is not None else DEBUG_DIR
+        out_img_dir = root / img_path.stem
+        ensure_dir(out_img_dir)
 
-    pd.DataFrame(name_scores).to_csv(out_img_dir / "name_scores.csv", index=False)
-    pd.DataFrame(grid_name_dbg.get("per_col", [])).to_csv(out_img_dir / "name_columns.csv", index=False)
-    pd.DataFrame(name_dbg.get("blob_rows", [])).to_csv(out_img_dir / "name_blobs.csv", index=False)
+        cv2.imwrite(str(out_img_dir / "roi_name.png"), name_patch)
+        cv2.imwrite(str(out_img_dir / "roi_answers.png"), answer_patch)
+        save_name_heatmap(name_scores, out_img_dir / "heatmap_name.png")
+        save_name_overlay(name_patch, grid_name_dbg, out_img_dir / "overlay_name_grid.png")
+        save_name_blob_overlay(name_patch, name_dbg, name_roi, out_img_dir / "overlay_name_blobs_labeled.png")
+        save_answer_overlay(answer_patch, circles, out_img_dir / "overlay_answer_circles.png")
+        save_answer_overlay_labeled(answer_patch, assignments, key, out_img_dir / "overlay_answer_labeled.png")
+        save_decoded_answers_table(out_img_dir, answers, key, assignments)
 
-    # Row-offset hypotheses for blob decoder, useful while calibrating row mapping.
-    name_hyp: List[Dict] = []
-    for off in range(-6, 7):
-        chars: List[str] = []
-        for g in name_dbg.get("groups", []):
-            row_idx = max(0, min(25, int(g["row_idx"]) + off))
-            chars.append(chr(ord("A") + row_idx))
-        name_hyp.append({"row_offset": off, "decoded": "".join(chars)})
-    with (out_img_dir / "name_hypotheses.json").open("w", encoding="utf-8") as f:
-        json.dump(name_hyp, f, indent=2)
+        pd.DataFrame(name_scores).to_csv(out_img_dir / "name_scores.csv", index=False)
+        pd.DataFrame(grid_name_dbg.get("per_col", [])).to_csv(out_img_dir / "name_columns.csv", index=False)
+        pd.DataFrame(name_dbg.get("blob_rows", [])).to_csv(out_img_dir / "name_blobs.csv", index=False)
 
-    dump = {
-        "image": img_path.name,
-        "shape": {"w": w, "h": h},
-        "name_roi": name_roi,
-        "answer_roi": answer_roi,
-        "name": {"decoded": decoded_name, "debug": name_dbg, "legacy_grid": {"decoded": grid_name, "debug": grid_name_dbg}},
-        "answers": {
-            "decoded_count": len(answers),
-            "first_20": {str(q): answers.get(q) for q in range(1, 21)},
-            "debug": ans_dbg,
-        },
-        "score": {"value": score, "breakdown": score_dbg},
-    }
+        # Row-offset hypotheses for blob decoder, useful while calibrating row mapping.
+        name_hyp: List[Dict] = []
+        for off in range(-6, 7):
+            chars: List[str] = []
+            for g in name_dbg.get("groups", []):
+                row_idx = max(0, min(25, int(g["row_idx"]) + off))
+                chars.append(chr(ord("A") + row_idx))
+            name_hyp.append({"row_offset": off, "decoded": "".join(chars)})
+        with (out_img_dir / "name_hypotheses.json").open("w", encoding="utf-8") as f:
+            json.dump(name_hyp, f, indent=2)
 
-    with (out_img_dir / "debug_dump.json").open("w", encoding="utf-8") as f:
-        json.dump(dump, f, indent=2)
+        dump = {
+            "image": img_path.name,
+            "shape": {"w": w, "h": h},
+            "name_roi": name_roi,
+            "answer_roi": answer_roi,
+            "name": {"decoded": decoded_name, "debug": name_dbg, "legacy_grid": {"decoded": grid_name, "debug": grid_name_dbg}},
+            "answers": {
+                "decoded_count": len(answers),
+                "first_20": {str(q): answers.get(q) for q in range(1, 21)},
+                "debug": ans_dbg,
+            },
+            "score": {"value": score, "breakdown": score_dbg},
+        }
+
+        with (out_img_dir / "debug_dump.json").open("w", encoding="utf-8") as f:
+            json.dump(dump, f, indent=2)
 
     return {
         "image": img_path.name,
@@ -664,39 +673,87 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
     }
 
 
-def main() -> None:
-    ensure_dir(OUT_DIR)
-    ensure_dir(DEBUG_DIR)
+def grade_batch(
+    answer_sheet_path: Path,
+    omr_folder: Path,
+    *,
+    output_dir: Optional[Path] = None,
+    output_excel_path: Optional[Path] = None,
+    save_debug: bool = True,
+) -> Tuple[List[Dict], Path]:
+    if not answer_sheet_path.exists():
+        raise FileNotFoundError(f"Answer sheet not found: {answer_sheet_path}")
+    if not omr_folder.exists():
+        raise FileNotFoundError(f"OMR folder not found: {omr_folder}")
 
-    bmps = pick_bmps(BMP_DIR)
-    xlsx = pick_first_xlsx(KEY_DIR)
-    key = load_answer_key_xlsx(xlsx)
-    save_answer_key_debug(key, xlsx)
+    out_dir = output_dir if output_dir is not None else OUT_DIR
+    ensure_dir(out_dir)
+    if save_debug:
+        ensure_dir(DEBUG_DIR)
 
-    print(f"[KEY] {xlsx.name} | entries={len(key)}")
-    print(f"[KEY] wrote {OUT_DIR / 'answer_key_parsed.csv'}")
-    print(f"[KEY] wrote {OUT_DIR / 'answer_key_parsed.json'}")
-    print(f"[OMR] processing {len(bmps)} files from {BMP_DIR}")
+    key = load_answer_key_xlsx(answer_sheet_path)
+    save_answer_key_debug(key, answer_sheet_path, out_dir)
+    bmps = pick_bmps(omr_folder)
+
+    print(f"[KEY] {answer_sheet_path.name} | entries={len(key)}")
+    print(f"[OMR] processing {len(bmps)} files from {omr_folder}")
 
     rows: List[Dict] = []
     for bmp in bmps:
-        row = process_one_image(bmp, key)
+        row = process_one_image(bmp, key, save_debug=save_debug, debug_root=DEBUG_DIR)
         rows.append(row)
         print(
             f"  - {bmp.name}: name='{row['name']}', score={row['score']:.2f}, "
             f"correct={row['correct']}, wrong={row['wrong']}, blank={row['blank']}"
         )
 
-    df = pd.DataFrame(rows)
-    csv_path = OUT_DIR / "results.csv"
-    json_path = OUT_DIR / "results.json"
+    result_df = pd.DataFrame(
+        {
+            "Student Name": [r["name"] for r in rows],
+            "Final Score": [r["score"] for r in rows],
+            "Correct": [r["correct"] for r in rows],
+            "Wrong": [r["wrong"] for r in rows],
+            "Blank": [r["blank"] for r in rows],
+        }
+    )
 
-    df.to_csv(csv_path, index=False)
+    if output_excel_path is None:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        excel_path = out_dir / f"{stamp}-result.xlsx"
+    else:
+        excel_path = output_excel_path
+        ensure_dir(excel_path.parent)
+    result_df.to_excel(excel_path, index=False)
+
+    csv_path = out_dir / "results.csv"
+    json_path = out_dir / "results.json"
+    result_df.to_csv(csv_path, index=False)
     with json_path.open("w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+        json.dump(
+            [
+                {
+                    "student_name": r["name"],
+                    "final_score": r["score"],
+                    "correct": r["correct"],
+                    "wrong": r["wrong"],
+                    "blank": r["blank"],
+                }
+                for r in rows
+            ],
+            f,
+            indent=2,
+        )
 
+    print(f"[OUT] wrote {excel_path}")
     print(f"[OUT] wrote {csv_path}")
     print(f"[OUT] wrote {json_path}")
+    return rows, excel_path
+
+
+def main() -> None:
+    xlsx = pick_first_xlsx(KEY_DIR)
+    _, excel_path = grade_batch(xlsx, BMP_DIR, output_dir=OUT_DIR, save_debug=True)
+    print(f"[DONE] Excel result file: {excel_path}")
 
 
 if __name__ == "__main__":
