@@ -31,4 +31,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OMR-Grader-windows
-          path: dist/OMR-Grader.exe
+          path: dist/OMR-Grader/**
