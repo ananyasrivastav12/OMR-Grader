@@ -1,0 +1,65 @@
+[
+  {
+    "image": "image49494.bmp",
+    "name": "EKE",
+    "score": 23.75,
+    "correct": 39,
+    "wrong": 61,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "image49495.bmp",
+    "name": "EUL",
+    "score": 48.75,
+    "correct": 59,
+    "wrong": 41,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "image49496.bmp",
+    "name": "UEEQE",
+    "score": 65.0,
+    "correct": 72,
+    "wrong": 28,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "image49497.bmp",
+    "name": "WLMDD",
+    "score": 43.75,
+    "correct": 55,
+    "wrong": 45,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "image49498.bmp",
+    "name": "EUEL",
+    "score": 56.25,
+    "correct": 65,
+    "wrong": 35,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "image49500.bmp",
+    "name": "NKXTV",
+    "score": 12.5,
+    "correct": 30,
+    "wrong": 70,
+    "blank": 0,
+    "decoded_answers": 100
+  },
+  {
+    "image": "scanned_example.bmp",
+    "name": "EUEL",
+    "score": 56.25,
+    "correct": 65,
+    "wrong": 35,
+    "blank": 0,
+    "decoded_answers": 100
+  }
+]
