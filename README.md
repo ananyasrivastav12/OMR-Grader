@@ -13,7 +13,7 @@ A lightweight desktop app that grades OMR `.bmp` sheets using a provided answer-
   - `YYYY-MM-DD_HH-MM-SS-result.xlsx`
   - Columns: `Student Name`, `Final Score`, `Correct`, `Wrong`, `Blank`
 
-## How It Works (Concise)
+## How It Works 
 This uses classical computer vision + deterministic logic (no deep learning):
 - Fixed ROI geometry (name/answer regions), scaled to image size
 - Hough circle detection for answer bubbles
@@ -37,8 +37,6 @@ This uses classical computer vision + deterministic logic (no deep learning):
    - Pick save path for output Excel (`.xlsx`)
    - Click Generate
 
-## Package App (for sharing)
-Build on the same OS as target device.
 
 ### Windows build
 ```bash
