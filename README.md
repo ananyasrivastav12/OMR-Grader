@@ -1,75 +1,61 @@
-# OMR Grader App
+# OMR Grader
 
-Desktop app to grade OMR `.bmp` sheets using one `.xlsx` answer key.
+A lightweight desktop app that grades OMR `.bmp` sheets using a provided answer-key `.xlsx` file.
 
-## Output
-Each run creates one Excel file named like:
-- `YYYY-MM-DD_HH-MM-SS-result.xlsx`
+## What This Project Does
+- Extracts student names from name bubbles in each OMR image
+- Extracts selected options for 100 questions
+- Scores each student with:
+  - `+1` for correct
+  - `-0.25` for wrong
+  - `0` for blank
+- Exports one result Excel file:
+  - `YYYY-MM-DD_HH-MM-SS-result.xlsx`
+  - Columns: `Student Name`, `Final Score`, `Correct`, `Wrong`, `Blank`
 
-Excel columns (in order):
-1. `Student Name`
-2. `Final Score`
-3. `Correct`
-4. `Wrong`
-5. `Blank`
+## How It Works (Concise)
+This uses classical computer vision + deterministic logic (no deep learning):
+- Fixed ROI geometry (name/answer regions), scaled to image size
+- Hough circle detection for answer bubbles
+- 1D k-means clustering to map bubble centers to `(block, question-row, option)`
+- Connected-components for name bubbles, grouped by x-position, then calibrated y-to-letter mapping (`A-Z`)
+- Deterministic scoring against the parsed answer key
 
----
+## Run From Source
+1. Install Python 3.10+.
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Start app:
+   ```bash
+   python app.py
+   ```
+4. In the app:
+   - Pick answer sheet (`.xlsx`)
+   - Pick OMR folder (`.bmp` images)
+   - Pick save path for output Excel (`.xlsx`)
+   - Click Generate
 
-## For Mom: Run the Packaged App (No Coding)
+## Package App (for sharing)
+Build on the same OS as target device.
 
-### On Windows laptop
-1. Receive the app folder (or `.zip`) from you.
-2. If zipped, right-click and choose **Extract All**.
-3. Open the extracted folder.
-4. Double-click `OMR-Grader.exe`.
-5. If Windows SmartScreen appears:
-   - Click **More info**
-   - Click **Run anyway**
-6. In the app:
-   - Pick `📄 Answer Sheet (.xlsx)`
-   - Pick `📁 OMR Images Folder (.bmp)`
-   - Pick `💾 Save Result As (.xlsx)`
-   - Click `✨ Generate Result`
-7. Open the saved Excel file from the path shown after completion.
-
-### On macOS laptop
-1. Open the provided `OMR-Grader` app/folder.
-2. If macOS blocks it (first run):
-   - Go to **System Settings > Privacy & Security**
-   - Click **Open Anyway** for the app
-3. Then use the same 4 steps inside the app:
-   - Answer sheet
-   - OMR folder
-   - Save location
-   - Generate
-
----
-
-## For You: Build the App
-
-Important: build on the same OS you will distribute to.
-- Build on Windows for Windows `.exe`
-- Build on macOS for macOS app
-
-### 1) Install dependencies
+### Windows build
 ```bash
 pip install -r requirements.txt
 pip install pyinstaller
-```
-
-### 2) Build
-```bash
 pyinstaller --noconfirm --windowed --name OMR-Grader app.py
 ```
+Output: `dist/OMR-Grader.exe`
 
-### 3) Share
-- Windows: share `dist/OMR-Grader.exe`
-- macOS/Linux: share `dist/OMR-Grader`
-
----
-
-## Run from Source (Developer)
+### macOS build
 ```bash
 pip install -r requirements.txt
-python app.py
+pip install pyinstaller
+pyinstaller --noconfirm --windowed --name OMR-Grader app.py
 ```
+Output: `dist/OMR-Grader`
+
+## Repository Notes
+Generated outputs are ignored via `.gitignore`:
+- `debug_out/`, `out/`, `__pycache__/`, generated `.xlsx/.csv/.json` outputs

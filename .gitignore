@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Generated outputs
+out/
+debug_out/
+*.xlsx
+results.csv
+results.json
+answer_key_parsed.csv
+answer_key_parsed.json
+
+# OS files
+.DS_Store
+Thumbs.db
