@@ -122,6 +122,21 @@ def load_answer_key_xlsx(path: Path) -> Dict[int, str]:
     return key
 
 
+def save_answer_key_debug(key: Dict[int, str], xlsx_path: Path) -> None:
+    ensure_dir(OUT_DIR)
+    rows = [{"q": q, "answer": key[q]} for q in sorted(key)]
+    pd.DataFrame(rows).to_csv(OUT_DIR / "answer_key_parsed.csv", index=False)
+
+    key_dump = {
+        "source_xlsx": xlsx_path.name,
+        "count": len(key),
+        "first_20": {str(q): key[q] for q in sorted(key)[:20]},
+        "all": {str(q): key[q] for q in sorted(key)},
+    }
+    with (OUT_DIR / "answer_key_parsed.json").open("w", encoding="utf-8") as f:
+        json.dump(key_dump, f, indent=2)
+
+
 def kmeans_1d(values: Sequence[float], k: int) -> Tuple[np.ndarray, np.ndarray]:
     v = np.asarray(values, dtype=np.float32).reshape(-1, 1)
     crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-3)
@@ -279,6 +294,24 @@ def decode_name_from_scores(scores: np.ndarray) -> Tuple[str, Dict]:
     return decoded, {"raw": raw, "per_col": per_col}
 
 
+def decode_name_with_offset(scores: np.ndarray, row_offset: int) -> str:
+    rows, cols = scores.shape
+    chars: List[str] = []
+    for c in range(cols):
+        col = scores[:, c]
+        order = np.argsort(-col)
+        best_i = int(order[0])
+        best = float(col[best_i])
+        second = float(col[int(order[1])]) if rows > 1 else 0.0
+        if best < T.NAME_BLANK_THRESHOLD or (best - second) < T.NAME_DELTA_THRESHOLD:
+            chars.append("")
+            continue
+
+        adj = max(0, min(25, best_i + row_offset))
+        chars.append(chr(ord("A") + adj))
+    return "".join(chars).rstrip("_").strip()
+
+
 def score_sheet(student_answers: Dict[int, str], key: Dict[int, str]) -> Tuple[float, Dict]:
     total_q = T.BLOCKS * T.QUESTIONS_PER_BLOCK
     correct = wrong = blank = 0
@@ -308,11 +341,109 @@ def save_answer_overlay(answer_patch: np.ndarray, circles: Optional[np.ndarray],
     cv2.imwrite(str(out_path), vis)
 
 
+def save_answer_overlay_labeled(
+    answer_patch: np.ndarray, assignments: List[Dict], key: Dict[int, str], out_path: Path
+) -> None:
+    vis = cv2.cvtColor(answer_patch, cv2.COLOR_GRAY2BGR)
+
+    for item in assignments:
+        q = int(item["q"])
+        opt = str(item["option"])
+        x = int(round(float(item["x"])))
+        y = int(round(float(item["y"])))
+        k = key.get(q)
+
+        if k is None:
+            color = (255, 200, 0)
+        elif k == opt:
+            color = (0, 170, 0)
+        else:
+            color = (0, 0, 255)
+
+        cv2.circle(vis, (x, y), 11, color, 2)
+        cv2.putText(
+            vis,
+            f"{q}:{opt}",
+            (x + 8, y - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.34,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    cv2.imwrite(str(out_path), vis)
+
+
 def save_name_heatmap(scores: np.ndarray, out_path: Path) -> None:
     s = np.clip(scores, 0.0, 1.0)
     img = (s * 255).astype(np.uint8)
     img = cv2.resize(img, None, fx=10, fy=10, interpolation=cv2.INTER_NEAREST)
     cv2.imwrite(str(out_path), img)
+
+
+def save_name_overlay(name_patch: np.ndarray, name_dbg: Dict, out_path: Path) -> None:
+    vis = cv2.cvtColor(name_patch, cv2.COLOR_GRAY2BGR)
+    h, w = name_patch.shape
+    rows, cols = T.NAME_ROWS, T.NAME_COLS
+    cell_h = h / rows
+    cell_w = w / cols
+
+    for c in range(cols + 1):
+        x = int(round(c * cell_w))
+        cv2.line(vis, (x, 0), (x, h - 1), (90, 90, 90), 1)
+    for r in range(rows + 1):
+        y = int(round(r * cell_h))
+        cv2.line(vis, (0, y), (w - 1, y), (90, 90, 90), 1)
+
+    for cinfo in name_dbg.get("per_col", []):
+        c = int(cinfo["col"])
+        r = int(cinfo["best_row"])
+        ch = str(cinfo["char"])
+        if not ch:
+            continue
+        x = int(round((c + 0.5) * cell_w))
+        y = int(round((r + 0.5) * cell_h))
+        cv2.circle(vis, (x, y), 8, (0, 180, 0), 2)
+        cv2.putText(vis, ch, (x - 5, y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+
+    cv2.imwrite(str(out_path), vis)
+
+
+def save_decoded_answers_table(
+    out_img_dir: Path, answers: Dict[int, str], key: Dict[int, str], assignments: List[Dict]
+) -> None:
+    pos_by_q: Dict[int, Tuple[float, float]] = {}
+    for item in assignments:
+        q = int(item["q"])
+        pos_by_q[q] = (float(item["x"]), float(item["y"]))
+
+    rows = []
+    max_q = T.BLOCKS * T.QUESTIONS_PER_BLOCK
+    for q in range(1, max_q + 1):
+        pred = answers.get(q)
+        k = key.get(q)
+        if pred is None:
+            status = "blank"
+        elif k is None:
+            status = "no_key"
+        elif pred == k:
+            status = "correct"
+        else:
+            status = "wrong"
+        xy = pos_by_q.get(q)
+        rows.append(
+            {
+                "q": q,
+                "predicted": pred,
+                "key": k,
+                "status": status,
+                "x": None if xy is None else round(xy[0], 2),
+                "y": None if xy is None else round(xy[1], 2),
+            }
+        )
+
+    pd.DataFrame(rows).to_csv(out_img_dir / "decoded_answers.csv", index=False)
 
 
 def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
@@ -345,7 +476,17 @@ def process_one_image(img_path: Path, key: Dict[int, str]) -> Dict:
     cv2.imwrite(str(out_img_dir / "roi_name.png"), name_patch)
     cv2.imwrite(str(out_img_dir / "roi_answers.png"), answer_patch)
     save_name_heatmap(name_scores, out_img_dir / "heatmap_name.png")
+    save_name_overlay(name_patch, name_dbg, out_img_dir / "overlay_name_grid.png")
     save_answer_overlay(answer_patch, circles, out_img_dir / "overlay_answer_circles.png")
+    assignments = ans_dbg.get("assignments", []) if isinstance(ans_dbg, dict) else []
+    save_answer_overlay_labeled(answer_patch, assignments, key, out_img_dir / "overlay_answer_labeled.png")
+    save_decoded_answers_table(out_img_dir, answers, key, assignments)
+
+    pd.DataFrame(name_scores).to_csv(out_img_dir / "name_scores.csv", index=False)
+    pd.DataFrame(name_dbg.get("per_col", [])).to_csv(out_img_dir / "name_columns.csv", index=False)
+    name_hyp = [{"row_offset": off, "decoded": decode_name_with_offset(name_scores, off)} for off in range(-8, 9)]
+    with (out_img_dir / "name_hypotheses.json").open("w", encoding="utf-8") as f:
+        json.dump(name_hyp, f, indent=2)
 
     dump = {
         "image": img_path.name,
@@ -382,8 +523,11 @@ def main() -> None:
     bmps = pick_bmps(BMP_DIR)
     xlsx = pick_first_xlsx(KEY_DIR)
     key = load_answer_key_xlsx(xlsx)
+    save_answer_key_debug(key, xlsx)
 
     print(f"[KEY] {xlsx.name} | entries={len(key)}")
+    print(f"[KEY] wrote {OUT_DIR / 'answer_key_parsed.csv'}")
+    print(f"[KEY] wrote {OUT_DIR / 'answer_key_parsed.json'}")
     print(f"[OMR] processing {len(bmps)} files from {BMP_DIR}")
 
     rows: List[Dict] = []
